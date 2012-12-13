@@ -21,22 +21,31 @@ class Tumblr {
 	
 	var $config = array(
 		'num' => 20,
-		'timeout' => 3,
-		'refresh' => 10,
+    //Seconds the Script should wait for a timeout from tumblr. 
+		'timeout' => 2, 
+    //Minutes the cache stays valid for.
+		'refresh' => 10, 
+    //Wether or not to force a cache refresh. You can override this with a `TumblrForceRefresh=true` url param.
+    'forceRefresh' => false, 
 		'page' => 1,
 		'protocol' => 'http://',
 		'username' => 'demo',
 		'domain' => 'tumblr.com',
 		'url' => '/api/read/json',
 		'callback' => 'a',
-		'cacheFolder' => '/tumblr/cache/'
+    'cacheFolder' => '/tumblr/cache/',
+    'api_key' => '3kuqJWMaieF5tiaMpZONMJZApkq7QxvV2p8hjIRIqVJx7OlfwB'
 	);
 	
 	static $time;
 
 	public function Tumblr() {
 		//$this->xmlLocation = CORE_ROOT. '/plugins/tumblr/tumblr.xml';
-		$this->config['cacheFolder'] = PLUGINS_ROOT . $this->config['cacheFolder']; 
+
+		$this->config['cacheFolder'] = PLUGINS_ROOT . $this->config['cacheFolder'];
+    if(!empty($_GET['TumblrForceRefresh'])) {
+      $this->config['forceRefresh'] = true;
+    }
 		$this->needed = false;
 		self::$time = time();
 	}
@@ -63,9 +72,14 @@ class Tumblr {
 	
 	public function getPosts($username, $page=0) {
 		$data = $this->getJson($username, $page);
-		
 		foreach($data['posts'] as $post) {
-			$this->posts[] = array_merge($post, $this->getContent($post), array('relativeTime' => self::relativeTime($post['date'])));
+      $this->posts[] = array_merge(
+        $post,
+        $this->getContent($post),
+        array(
+          'relativeTime' => self::relativeTime($post['date']),
+        )
+      );
 		}
 		return $this->posts;
 	}
@@ -156,6 +170,9 @@ class Tumblr {
 	
 	public function refreshNeeded($file) {
 		//reuturns true or false depending on if we need to refresh our xml file
+    if($this->config['forceRefresh']) {
+      return true;
+    }
 		clearstatcache();
 		if(!file_exists($file)) {
 			touch($file, self::$time);
@@ -173,78 +190,81 @@ class Tumblr {
 	
 	public function cacheJson($cacheFile, $json) {
 		//refreshes our xml file, returns true or false depending if succesful
-		if(file_put_contents($cacheFile, $json)) {
-			return true;
-		} else {
-			return false;
-		}
+    //return true;
+
+    D::log('cachin json', $cacheFile);
+    if(!empty($json) && file_put_contents($cacheFile, $json)) {
+      return true;
+    } else {
+      return false;
+    }
 	}
+
 	public function loadPostJson($id=0) {
 		$cacheFile = $this->config['cacheFolder'] . 'id_' . $id . '.json';
 		if($this->refreshNeeded($cacheFile)) {
-			$fp = fsockopen($this->config['domain'], 80);
-			if ($fp) {
-				fwrite($fp, "GET $this->url HTTP/1.0\r\n\r\n");
-				stream_set_timeout($fp, $this->config['timeout']);
-				$info = stream_get_meta_data($fp);
-				fclose($fp);
-			    
-				if (!$info['timed_out']) {
-					$url = $this->buildPostUrl($id);
-					$handle = fopen($url, "rb");
-					$contents = stream_get_contents($handle);
-					fclose($handle);
-					if($contents == false) {
-						$this->json = file_get_contents($url);
-					} else {
-						$this->json = $contents;
-					}
-				}
-			} else {
-				$this->json = file_get_contents($url);
-			}
-			if(!$this->json) {
-				$this->json = file_get_contents($cacheFile);
-			} else {
-				$this->cacheJson($cacheFile, $this->json);
-			}
-		} else {
-			$this->json = file_get_contents($cacheFile);
-		}
+
+
+      //$pid = pcntl_fork();
+      //if ($pid == -1) {
+           //die('could not fork');
+      //} else if ($pid) {
+           //// we are the parent
+           ////pcntl_wait($status); //Protect against Zombie children
+      //} else {
+        //// we are the child workin in the BG
+        $url = $this->buildPostUrl($id);
+        $urlContents = @file_get_contents($url);  
+        D::log($url, 'url of loadPostJson being loaded');
+        $this->json = @file_get_contents(
+          $url,
+          false,
+          stream_context_create(array('http'=>array(
+            'timeout' => $this->config['timeout'],
+          )))
+        );
+        //$this->cacheJson($cacheFile, $this->json);
+        //exit('cache updated');
+      //}
+
+      if(!empty($urlContents)) {
+        $this->json = $urlContents;
+        $this->cacheJson($cacheFile, $this->json);
+      } else {
+        $this->json = file_get_contents($cacheFile);
+      }
+
+      //if(empty($this->json)) {
+        //D::log($cacheFile, 'Can not get updated json, loading from cache instead.');
+        //$this->json = file_get_contents($cacheFile);
+      //}
+
+		} else { 
+		  $this->json = file_get_contents($cacheFile);
+    }
+    //D::log('Post json returned from Tumblr->loadPostJson', $this->json);
 		return $this->json;
 	}
+
+
 	public function loadJson($page=0) {
 		$cacheFile = $this->config['cacheFolder'] . $page . '.json';
-		if($this->refreshNeeded($cacheFile)) {
-			$fp = fsockopen($this->config['domain'], 80);
-			if ($fp) {
-				fwrite($fp, "GET $this->url HTTP/1.0\r\n\r\n");
-				stream_set_timeout($fp, $this->config['timeout']);
-				$info = stream_get_meta_data($fp);
-				fclose($fp);
-			    
-				if (!$info['timed_out']) {
-					$url = $this->buildUrl($page);
-					$handle = fopen($url, "rb");
-					$contents = stream_get_contents($handle);
-					fclose($handle);
-					if($contents == false) {
-						$this->json = file_get_contents($url);
-					} else {
-						$this->json = $contents;
-					}
-				}
-			} else {
-				$this->json = file_get_contents($url);
-			}
-			if(!$this->json) {
-				$this->json = file_get_contents($cacheFile);
-			} else {
-				$this->cacheJson($cacheFile, $this->json);
-			}
-		} else {
-			$this->json = file_get_contents($cacheFile);
-		}
+		//if(true) {
+    if($this->refreshNeeded($cacheFile)) {
+      $url = $this->buildUrl($page);
+      $urlContents = @file_get_contents($url);  
+      if(!empty($urlContents)) {
+        $this->json = $urlContents;
+        $this->cacheJson($cacheFile, $this->json);
+      } else {
+        $this->json = file_get_contents($cacheFile);
+      }
+    } else {
+      $this->json = file_get_contents($cacheFile);
+    } 
+
+    D::log($cacheFile, 'Cache is still good, loading json from cache.');
+    //D::log($this->json, 'json returned from Tumblr->loadJson');
 		return $this->json;
 	}
 	
@@ -266,8 +286,7 @@ class Tumblr {
 	}
 	public function buildPostUrl($id=0) {
 		return $this->config['protocol'] . $this->config['username'] . '.' . $this->config['domain'] . $this->config['url'] . '?' . http_build_query(array(
-			'callback' => $this->config['callback'],
-			'id' => $id
+			'callback' => $this->config['callback']
 		));
 	}	
 	public function buildUrl($page=0) {
